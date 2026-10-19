@@ -221,3 +221,32 @@ def test_separate_threshold_search_honors_configuration(n_scorers, bounds, step_
     result = Tuner().tune_params(score_lists=[scores] * n_scorers, correct_indicators=[False, False, True, True], weights_objective="roc_auc", thresh_objective="accuracy_score", thresh_bounds=bounds, step_size=step_size, n_trials=2)
 
     assert result["thresh"] == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("n_scorers", [2, 3, 4], ids=["grid-k2", "grid-k3", "optuna"])
+@pytest.mark.parametrize("weights_objective", ["roc_auc", "fbeta_score"])
+def test_tune_params_excludes_responses_with_nan_component_scores(n_scorers, weights_objective):
+    """A single NaN component score (e.g. a judge that exhausted its retries) must not crash tuning.
+
+    At the grid edges a weight of 0 on the only valid component makes the ensemble score NaN, which
+    sklearn objectives reject. Such responses are excluded from tuning with a warning.
+    """
+    correct_indicators = [True, False, True, False, True, False, True, False]
+    informative = [0.9, 0.1, 0.8, 0.2, 0.95, 0.05, 0.85, 0.15]
+    score_lists = [list(informative) for _ in range(n_scorers)]
+    score_lists[0][1] = np.nan
+
+    tuner = Tuner()
+    with pytest.warns(UserWarning, match="Excluding 1 of 8 responses"):
+        result = tuner.tune_params(score_lists=score_lists, correct_indicators=correct_indicators, weights_objective=weights_objective, thresh_objective="fbeta_score", n_trials=5)
+
+    assert len(result["weights"]) == n_scorers
+    assert not np.isnan(result["thresh"])
+    assert tuner.score_lists.shape == (n_scorers, 7)
+    assert len(tuner.correct_indicators) == 7
+
+
+def test_tune_params_raises_when_no_response_has_all_component_scores():
+    score_lists = [[np.nan, 0.2, 0.8], [0.1, np.nan, np.nan]]
+    with pytest.raises(ValueError, match="at least one response"):
+        Tuner().tune_params(score_lists=score_lists, correct_indicators=[False, False, True])

@@ -18,6 +18,7 @@ from numpy.typing import ArrayLike
 import optuna
 from typing import Any, Dict, List, Tuple, Optional
 import time
+import warnings
 from rich.progress import Progress
 from sklearn.metrics import fbeta_score, balanced_accuracy_score, accuracy_score, roc_auc_score, log_loss, average_precision_score, brier_score_loss
 
@@ -139,6 +140,7 @@ class Tuner:
         self.progress_bar = progress_bar
 
         self._validate_tuning_inputs()
+        self._drop_incomplete_rows()
         self.weights_tuning_objective = self.objective_to_func[self.weights_objective]
         self.threshold_tuning_objective = self.objective_to_func[self.thresh_objective]
 
@@ -218,6 +220,24 @@ class Tuner:
                     thresh_objective must match weights_objective for any threshold-dependent weights_objective.
                     """
                 )
+
+    def _drop_incomplete_rows(self) -> None:
+        """Helper function to exclude responses with a NaN score from any component.
+
+        A NaN component score is renormalized away by ``_compute_ensemble_scores``, but if every valid
+        component of a response has weight 0 the ensemble score is NaN and the objective raises. This
+        happens at the edges of the grid (e.g. weights [1, 0]), so tuning on responses with missing
+        component scores would crash. Excluding them keeps the evaluated set identical across candidates.
+        """
+        complete_rows = ~np.isnan(self.score_lists).any(axis=0)
+        if complete_rows.all():
+            return
+        if not complete_rows.any():
+            raise ValueError("Tuning requires at least one response with a non-NaN score from every scorer component.")
+        n_dropped = int((~complete_rows).sum())
+        warnings.warn(f"Excluding {n_dropped} of {len(complete_rows)} responses with NaN component scores from weight and threshold tuning.")
+        self.score_lists = self.score_lists[:, complete_rows]
+        self.correct_indicators = self.correct_indicators[complete_rows]
 
     def _optuna_objective(self, trial) -> float:
         """Helper function to define optuna objective."""
